@@ -269,7 +269,7 @@ namespace Baconit.ContentPanels.Panels
                 // Try to figure out the type.
                 try
                 {
-                    if (GifImageContentPanel.CanHandlePost(source))
+                    if (await GifImageContentPanel.CanHandlePostAsync(source))
                     {
                         controlType = typeof(GifImageContentPanel);
                     }

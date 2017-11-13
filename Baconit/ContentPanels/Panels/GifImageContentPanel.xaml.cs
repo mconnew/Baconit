@@ -18,6 +18,8 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 using Windows.Web.Http;
+using HtmlAgilityPack;
+using Windows.UI.Xaml.Media.Imaging;
 
 namespace Baconit.ContentPanels.Panels
 {
@@ -37,6 +39,7 @@ namespace Baconit.ContentPanels.Panels
         /// Holds a reference to the video we are playing.
         /// </summary>
         MediaElement m_gifVideo;
+        Image m_gifImage;
 
         public GifImageContentPanel(IContentPanelBaseInternal panelBase)
         {
@@ -49,10 +52,10 @@ namespace Baconit.ContentPanels.Panels
         /// </summary>
         /// <param name="post"></param>
         /// <returns></returns>
-        static public bool CanHandlePost(ContentPanelSource source)
+        public static async Task<bool> CanHandlePostAsync(ContentPanelSource source)
         {
             // See if we can find a imgur, gfycat gif, or a normal gif we can send to gfycat.
-            if (String.IsNullOrWhiteSpace(GetImgurUrl(source.Url)) && String.IsNullOrWhiteSpace(GetGfyCatApiUrl(source.Url)) && String.IsNullOrWhiteSpace(GetGifUrl(source.Url)))
+            if (String.IsNullOrWhiteSpace(await GetImgurUrlAsync(source)) && String.IsNullOrWhiteSpace(GetGfyCatApiUrl(source.Url)) && String.IsNullOrWhiteSpace(GetGifUrl(source.Url)))
             {
                 return false;
             }
@@ -83,7 +86,7 @@ namespace Baconit.ContentPanels.Panels
             Task.Run(async () =>
             {
                 // Try to get the imgur url
-                string gifUrl = GetImgurUrl(m_base.Source.Url);
+                string gifUrl = await GetImgurUrlAsync(m_base.Source);
 
                 // If that failed try to get a url from GfyCat
                 if (gifUrl.Equals(String.Empty))
@@ -101,11 +104,34 @@ namespace Baconit.ContentPanels.Panels
                 // Since some of this can be costly, delay the work load until we aren't animating.
                 await Windows.ApplicationModel.Core.CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(CoreDispatcherPriority.Low, () =>
                 {
-                    // If we didn't get anything something went wrong.
+                    // If we weren't able to convert the gif using gifycat
                     if (String.IsNullOrWhiteSpace(gifUrl))
                     {
-                        m_base.FireOnFallbackToBrowser();
-                        App.BaconMan.TelemetryMan.ReportUnexpectedEvent(this, "FailedToShowGifAfterConfirm");
+                        lock(this)
+                        {
+                            // Make sure we aren't destroyed.
+                            if (m_base.IsDestoryed)
+                            {
+                                return;
+                            }
+
+                            m_gifImage = new Image();
+                            m_gifImage.Tapped += OnGifImageTapped;
+                            BitmapImage bitmapImage = new BitmapImage();
+                            //m_gifImage.Width = bitmapImage.DecodePixelWidth = 80;
+                            // Natural px width of image source.
+                            // You don't need to set Height; the system maintains aspect ratio, and calculates the other
+                            // dimension, as long as one dimension measurement is provided.
+                            bitmapImage.UriSource = new Uri(m_base.Source.Url, UriKind.Absolute);
+                            bitmapImage.ImageOpened += OnGifImageLoadComplete;
+                            bitmapImage.ImageFailed += OnGifImageLoadComplete;
+                            bitmapImage.AutoPlay = true;
+                            m_gifImage.Source = bitmapImage;
+                            // Add the video to the root                    
+                            ui_contentRoot.Children.Add(m_gifImage);
+                        }
+                        //m_base.FireOnFallbackToBrowser();
+                        //App.BaconMan.TelemetryMan.ReportUnexpectedEvent(this, "FailedToShowGifAfterConfirm");
                         return;
                     }
 
@@ -151,6 +177,20 @@ namespace Baconit.ContentPanels.Panels
                     m_gifVideo = null;
                 }
 
+                if (m_gifImage != null)
+                {
+                    m_gifImage.Tapped -= OnGifImageTapped;
+                    BitmapImage bitmapImage = (BitmapImage)m_gifImage.Source;
+                    if(bitmapImage.IsPlaying)
+                    {
+                        bitmapImage.Stop();
+                    }
+
+                    bitmapImage.ImageOpened -= OnGifImageLoadComplete;
+                    bitmapImage.ImageFailed -= OnGifImageLoadComplete;
+                    m_gifImage = null;
+                }
+
                 // Clear vars
                 m_shouldBePlaying = false;
 
@@ -190,6 +230,19 @@ namespace Baconit.ContentPanels.Panels
                         m_gifVideo.Pause();
                     }
                 }
+
+                if (m_gifImage != null)
+                {
+                    var bitmap = (BitmapImage)m_gifImage.Source;
+                    if (isVisible)
+                    {
+                        bitmap.Play();
+                    }
+                    else
+                    {
+                        bitmap.Stop();
+                    }
+                }
             }
         }
 
@@ -217,6 +270,14 @@ namespace Baconit.ContentPanels.Panels
             }            
         }
 
+        private void OnGifImageLoadComplete(object sender, RoutedEventArgs e)
+        {
+            if (m_base.IsLoading)
+            {
+                m_base.FireOnLoading(false);
+            }
+        }
+
         /// <summary>
         /// Fired when the gif is tapped
         /// </summary>
@@ -237,35 +298,144 @@ namespace Baconit.ContentPanels.Panels
             }
         }
 
+        private void OnGifImageTapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (m_gifImage != null)
+            {
+                var bitmap = (BitmapImage)m_gifImage.Source;
+                if (bitmap.IsPlaying)
+                {
+                    bitmap.Stop();
+                }
+                else
+                {
+                    bitmap.Play();
+                }
+            }
+        }
+
         #endregion
 
         #region Gif Url Parsing
+
+        private static HttpClient s_httpClient = new HttpClient();
 
         /// <summary>
         /// Tries to get a Imgur gif url
         /// </summary>
         /// <param name="postUrl"></param>
         /// <returns></returns>
-        private static string GetImgurUrl(string postUrl)
+        private static async Task<string> GetImgurUrlAsync(ContentPanelSource source)
         {
-            // Send the url to lower, but we need both because some websites
-            // have case sensitive urls.
-            string postUrlLower = postUrl.ToLower();
-
-            // Check for imgur gifv
-            if (postUrlLower.Contains(".gifv") && postUrlLower.Contains("imgur.com"))
+            var postUrl = source.Url;
+            Uri uri;
+            if (!Uri.TryCreate(postUrl, UriKind.Absolute, out uri))
             {
-                // If the link is imgur, replace the .gifv with a .mp4 and we should get a video back.
-                return postUrl.Replace(".gifv", ".mp4");
+                return String.Empty;
             }
-            // Check for imgur gif
-            if (postUrlLower.Contains(".gif") && postUrlLower.Contains("imgur.com"))
+
+            if (!uri.Host.EndsWith("imgur.com", StringComparison.OrdinalIgnoreCase))
             {
-                // If the link is imgur, replace the .gifv with a .mp4 and we should get a video back.
-                return postUrl.Replace(".gif", ".mp4");
+                return String.Empty;
+            }
+
+            if (!String.IsNullOrEmpty(source.AltUrl))
+            {
+                return source.AltUrl;
+            }
+
+            var filename = uri.Segments.Last();
+
+            if (filename.Equals("/")) // There is no filename
+            {
+                return String.Empty;
+            }
+
+            if (filename.EndsWith(".gifv", StringComparison.OrdinalIgnoreCase))
+            {
+                filename = filename.Replace(".gifv", ".mp4");
+            }
+            else if (filename.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+            {
+                filename = filename.Replace(".gif", ".mp4");
+            }
+            else if (!filename.Contains("."))
+            {
+                return (await GetImgUrMp4UriAsync(uri)).ToString();
+            }
+            else
+            {
+                return string.Empty;
+            }
+
+            var builder = new UriBuilder();
+            builder.Host = "imgur.com";
+            builder.Path = "/" + filename;
+            return builder.ToString();
+        }
+
+        private static async Task<string> GetImgUrMp4UriAsync(Uri uri)
+        {
+            var response = await GetPageAsync(uri);
+            var html = await response.Content.ReadAsStringAsync();
+            var doc = new HtmlDocument();
+            doc.LoadHtml(html);
+            return FindMp4ContentUrl(doc.DocumentNode.SelectNodes(@"//meta[@name='twitter:player:stream']"));
+        }
+
+        private static async Task<HttpResponseMessage> GetPageAsync(Uri uri)
+        {
+            uri = FixImgUrUri(uri);
+            while (true)
+            {
+                var response = await s_httpClient.GetAsync(uri);
+
+                // if the link is on the main imgur.com domain but has a valid file ending, it will be redirected to i.imgur.com
+                // so make sure the redirected link is on the main imgur.com domain
+                var redirectedUri = response.RequestMessage.RequestUri;
+                uri = FixImgUrUri(redirectedUri);
+                if (redirectedUri.Equals(uri))
+                {
+                    return response;
+                }
+
+                response.Dispose();
+            }
+        }
+
+        static string FindMp4ContentUrl(HtmlNodeCollection nodes)
+        {
+            if(nodes == null)
+            {
+                return String.Empty;
+            }
+
+            Uri uri;
+            foreach (var node in nodes)
+            {
+                if (Uri.TryCreate(node.Attributes["content"]?.Value, UriKind.Absolute, out uri))
+                {
+                    if (uri.Segments.Last().EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return uri.ToString();
+                    }
+                }
             }
 
             return String.Empty;
+        }
+
+        static Uri FixImgUrUri(Uri uri)
+        {
+            if (uri.Host.Equals("i.imgur.com", StringComparison.OrdinalIgnoreCase))
+            {
+                var builder = new UriBuilder(uri);
+                builder.Host = "imgur.com";
+                builder.Query = "";
+                return builder.Uri;
+            }
+
+            return uri;
         }
 
         /// <summary>
@@ -298,29 +468,24 @@ namespace Baconit.ContentPanels.Panels
         /// <returns></returns>
         private static string GetGfyCatApiUrl(string postUrl)
         {
-            // Send the url to lower, but we need both because some websites
-            // have case sensitive urls.
-            string postUrlLower = postUrl.ToLower();
-
-            int gifNameStart = postUrlLower.IndexOf("gfycat.com/");
-
-            if (gifNameStart != -1)
+            Uri uri;
+            if (!Uri.TryCreate(postUrl, UriKind.Absolute, out uri))
             {
-                // Get to the end of the domain
-                gifNameStart += 11;
-
-                // Look for the end of the gif name
-                int gifNameEnd = postUrlLower.IndexOf('/', gifNameStart);
-                if (gifNameEnd == -1)
-                {
-                    gifNameEnd = postUrlLower.Length;
-                }
-
-                // Use the original url to get the gif name.
-                string gifName = postUrl.Substring(gifNameStart, gifNameEnd - gifNameStart);
-                return $"http://gfycat.com/cajax/get/{gifName}";
+                return String.Empty;
             }
-            return String.Empty;
+            
+            if (!uri.Host.EndsWith("gfycat.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return String.Empty;
+            }
+
+            String gifName = uri.Segments.Last();
+            if (gifName.Equals("/")) // Empty path
+            {
+                return String.Empty;
+            }
+
+            return $"http://gfycat.com/cajax/get/" + gifName;
         }
 
         // Disable this annoying warning.

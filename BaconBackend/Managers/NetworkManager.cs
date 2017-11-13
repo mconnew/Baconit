@@ -16,10 +16,12 @@ namespace BaconBackend.Managers
     public class NetworkManager
     {
         BaconManager m_baconMan;
+        private HttpClient m_httpClient;
 
         public NetworkManager(BaconManager baconMan)
         {
             m_baconMan = baconMan;
+            m_httpClient = new HttpClient();
         }
 
         /// <summary>
@@ -102,7 +104,6 @@ namespace BaconBackend.Managers
             {
                 throw new Exception("The URL is null!");
             }
-            HttpClient request = new HttpClient();
             HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Get, new Uri(url, UriKind.Absolute));
             // Set the user agent
             message.Headers.Add("User-Agent", "Baconit");
@@ -111,7 +112,7 @@ namespace BaconBackend.Managers
             {
                 message.Headers["Authorization"] = authHeader;
             }
-            HttpResponseMessage response = await request.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
+            HttpResponseMessage response = await m_httpClient.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
             if(response.StatusCode == Windows.Web.Http.HttpStatusCode.ServiceUnavailable ||
                 response.StatusCode == Windows.Web.Http.HttpStatusCode.BadGateway ||
                 response.StatusCode == Windows.Web.Http.HttpStatusCode.GatewayTimeout ||
@@ -135,7 +136,6 @@ namespace BaconBackend.Managers
             {
                 throw new Exception("The URL is null!");
             }
-            HttpClient request = new HttpClient();
             HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Post, new Uri(url, UriKind.Absolute));
             message.Headers.Add("User-Agent", "Baconit");
 
@@ -149,7 +149,7 @@ namespace BaconBackend.Managers
             message.Content = new HttpFormUrlEncodedContent(postData);
 
             // Send the request
-            HttpResponseMessage response = await request.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
+            HttpResponseMessage response = await m_httpClient.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
             if (response.StatusCode == Windows.Web.Http.HttpStatusCode.ServiceUnavailable ||
               response.StatusCode == Windows.Web.Http.HttpStatusCode.BadGateway ||
               response.StatusCode == Windows.Web.Http.HttpStatusCode.GatewayTimeout ||
@@ -173,12 +173,11 @@ namespace BaconBackend.Managers
             }
 
             // Build the request
-            HttpClient request = new HttpClient();
             HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Get, new Uri(url, UriKind.Absolute));
             message.Headers.Add("User-Agent", "Baconit");
 
             // Send the request
-            HttpResponseMessage response = await request.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
+            HttpResponseMessage response = await m_httpClient.SendRequestAsync(message, HttpCompletionOption.ResponseHeadersRead);
             return await response.Content.ReadAsBufferAsync();
         }
 

@@ -16,6 +16,7 @@ namespace Baconit.ContentPanels
 
         public string Id;
         public string Url = null;
+        public string AltUrl = null; // Used if different url is to be used, e.g. gifv -> mp4
         public string SelfText = null;
         public string Subreddit = null;
         public bool IsNSFW = false;
